@@ -1,0 +1,6 @@
+[workspace]
+members = [ 
+	"mafic", 
+]
+resolver = "3"
+
