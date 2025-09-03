@@ -38,6 +38,61 @@ impl EngineState {
     pub fn new_shareable() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self::new()))
     }
+
+    /// Read the data associated with the given wire
+    pub fn read_wire<T: Copy + std::fmt::Debug + 'static>(
+        &self, wire: WireId<T>
+    ) -> Option<T> 
+    {
+        let s = self.wires.data.get(&wire.id()).unwrap();
+
+        // Take ownership over the state
+        let mut s = s.borrow_mut();
+
+        // Downcast the wire's state into the concrete type
+        let s = s.as_any_mut().downcast_mut::<WireState<T>>().unwrap();
+        s.data
+    }
+
+    /// Write data to the given wire
+    pub fn write_wire<T: Copy + std::fmt::Debug + 'static>(
+        &self, wire: WireId<T>, data: T
+    )
+    {
+        let s = self.wires.data.get(&wire.id()).unwrap();
+
+        // Take ownership over the state
+        let mut s = s.borrow_mut();
+
+        // Downcast the wire's state into the concrete type
+        let s = s.as_any_mut().downcast_mut::<WireState<T>>().unwrap();
+
+        // Write the data. 
+        // FIXME: If the wire has already been assigned a value, just panic. 
+        if let Some(data) = s.data.replace(data) {
+            panic!("driver-to-driver error {:?}, {:x?}", wire, *s);
+        } 
+    }
+
+    /// Invalidate data for the given wire
+    pub fn invalidate_wire<T: Copy + std::fmt::Debug + 'static>(
+        &self, wire: WireId<T>
+    )
+    {
+        let s = self.wires.data.get(&wire.id()).unwrap();
+
+        // Take ownership over the state
+        let mut s = s.borrow_mut();
+
+        // Downcast the wire's state into the concrete type
+        let s = s.as_any_mut().downcast_mut::<WireState<T>>().unwrap();
+
+        s.data = None;
+    }
+
+
+
+
 }
 
 #[derive(Debug)]
@@ -49,16 +104,12 @@ pub enum EngineErr {
 /// A [wildly inefficient] `async` executor that completes the simulated logic
 /// described by types implementing [`ModuleLike`]. 
 ///
-/// Implementation Notes
-/// ====================
-///
-/// - Presumably, all of this is completely unsound. 
-///
-/// - For now, focus on running this with a single thread.
+/// Considerations
+/// ==============
 ///
 /// - The task queue is filled up at the start of a simulated clock cycle.
-///   For each simulated module, the user is expected to add the future 
-///   returned by [`ModuleLike::run`](crate::module::ModuleLike::run) 
+///   For each simulated instance of a module, the user is expected to add the 
+///   future returned by [`ModuleLike::run`](crate::module::ModuleLike::run) 
 ///   to the queue. Each of these tasks describes the simulated logic that 
 ///   occurs in-between clock edges. 
 ///
@@ -66,8 +117,9 @@ pub enum EngineErr {
 ///   [ie. with futures] because we do not want to burden the user [too much]
 ///   with having to explicitly specify how the work associated with each 
 ///   module should be scheduled. Instead, when a module wants to read from 
-///   a wire, we simply wait until the wire has been updated by a different
-///   module.
+///   a wire, we `await` a future. If the wire's state is undefined, the 
+///   engine switches to a different task (and ideally, switches to a task
+///   that causes forward-progress through the simulation). 
 ///
 /// - When the task queue has been emptied, it means that values have 
 ///   successfully propagated through all tasks, and all tasks have driven
@@ -147,7 +199,7 @@ impl <'a> Engine<'a> {
                 self.tasks.push_back(task);
                 self.steps += 1;
             } else { 
-            println!("completed {}", task.name);
+                println!("completed {}", task.name);
             }
         }
     }

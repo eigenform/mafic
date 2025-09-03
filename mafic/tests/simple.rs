@@ -7,6 +7,12 @@ pub struct ModuleA {
     resp_in: WireId<usize>,
 }
 impl ModuleLike for ModuleA {
+    fn new_instance(state: &mut EngineState) -> Self { 
+        Self { 
+            msg_out: state.wires.alloc(),
+            resp_in: state.wires.alloc(),
+        }
+    }
     async fn run(&self) {
         // Drive a constant value on this wire (to module B)
         self.msg_out.drive(0xdeadbeef).await;
@@ -23,6 +29,13 @@ pub struct ModuleB {
     resp_out: WireId<usize>,
 }
 impl ModuleLike for ModuleB {
+    fn new_instance(state: &mut EngineState) -> Self { 
+        Self { 
+            msg_in: state.wires.alloc(),
+            resp_out: state.wires.alloc(),
+        }
+    }
+
     async fn run(&self) {
         // Wait for a message (from module A)
         let input = self.msg_in.sample().await;
@@ -35,16 +48,20 @@ impl ModuleLike for ModuleB {
 #[test]
 fn simple_test_wires() {
     let mut state = EngineState::new_shareable();
+
+    let a = ModuleA::new_instance(&mut state.lock().unwrap());
+    let b = ModuleB::new_instance(&mut state.lock().unwrap());
+
+
     let mut e = Engine::new(state.clone());
 
-    let msg  = state.lock().unwrap().wires.alloc();
-    let resp = state.lock().unwrap().wires.alloc();
+    e.schedule("poke", async {
+        b.msg_in.assign(a.msg_out).await;
+        a.resp_in.assign(b.resp_out).await;
 
-    let a = ModuleA { msg_out: msg, resp_in: resp, };
-    let b = ModuleB { msg_in: msg, resp_out: resp, };
-
-    e.schedule("MyModule", a.run());
-    e.schedule("MyModule2", b.run());
+    });
+    e.schedule_module(&a);
+    e.schedule_module(&b);
     e.run();
 
     drop(e);

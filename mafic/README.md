@@ -22,6 +22,7 @@ between states occur at places where the function is `.await`-ing a future
 value. This splitting of `async` functions into concurrent tasks lets us write 
 code that "locally" looks like a parallel process. 
 
+
 ## Features
 
 - [x] Undefined and probably incorrect semantics
@@ -35,7 +36,8 @@ A model consists of the following parts:
 - Types implementing [`ModuleLike`] are simulated "hardware modules"
 - [`WireId`] and [`RegisterId`] are references to simulated wires/registers
 - [`EngineState`] tracks the state of simulated wires and registers
-- [`Engine`] is an `async` executor that performs simulated logic
+- [`Engine`] is an `async` executor that uses [`EngineState`] to perform 
+  the simulated logic
 
 The [`ModuleLike`] trait is intended to be implemented on `struct` types that 
 represent "hardware modules". The `struct` members are intended to represent 
@@ -43,8 +45,10 @@ input/output wires and registers belonging to the module.
 
 When writing a module, input/output wires and registers are represented with 
 the [`WireId`] and [`RegisterId`] types. When creating an *instance* of some 
-type implementing [`ModuleLike`], all wires and registers must be allocated 
-by [`EngineState`]. 
+type implementing [`ModuleLike`], all wires/registers/ports must be allocated 
+by [`EngineState`]. The implementation of [`ModuleLike::new_instance`] must 
+allocate for all wires/registers/ports, and must also call 
+[`ModuleLike::new_instance`] on all submodules. 
 
 An [`Engine`] is an `async` executor responsible for running a simulation. 
 Users are expected to describe the logic associated with a module by 
@@ -68,75 +72,4 @@ When a wire's value is undefined, the simulated logic must block until the
 value on a wire is known. This can only occur if another task is scheduled
 and drives a value on the wire. 
 
-## Example
-
-```
-use mafic::*;
-
-pub struct MyModule {
-    input: WireId<usize>,
-    output: WireId<usize>,
-    reg: RegisterId<usize>,
-}
-impl ModuleLike for MyModule { 
-    async fn run(&self) {
-        // Sample the input wire
-        let x = self.input.sample().await;
-
-        // Add one to the value and send it to a register
-        self.reg.drive(x + 1).await;
-
-        // Sample the current register value
-        let output = self.reg.sample().await;
-
-        // Drive the register's value on the output wire
-        self.output.drive(output).await;
-    }
-}
-
-pub fn main() {
-    let mut state = EngineState::new_shareable();
-
-    // Create an instance of MyModule
-    let my_module = {
-        let mut state = state.lock().unwrap();
-        MyModule { 
-            input:  state.wires.alloc(),
-            output: state.wires.alloc(),
-            reg:    state.registers.alloc(0),
-        }
-    };
-
-    let mut e = Engine::new(state.clone());
-
-    // Add processes to the schedule for this cycle
-    e.schedule_module(&my_module);
-
-    // (This is stimulus for 'my_module.input')
-    e.schedule("poke", async { 
-        my_module.input.drive(1).await;
-    });
-
-    // Run a single cycle to completion
-    e.run();
-
-    // The output should be 0! 
-    assert!(state.lock().unwrap().wires.peek_wire(my_module.output).unwrap() == 0);
-
-    // Update registers and reset wires for the next cycle
-    e.update_registers();
-    e.reset_wires();
-
-    // Add processes to the schedule for this cycle (again!)
-    e.schedule_module(&my_module);
-    e.schedule("poke", async { 
-        my_module.input.drive(0).await;
-    });
-
-    e.run();
-
-    // The output should be 2! 
-    assert!(state.lock().unwrap().wires.peek_wire(my_module.output).unwrap() == 2);
-}
-```
 

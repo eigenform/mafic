@@ -1,6 +1,7 @@
 //! Types for representing simulated components/modules. 
 
 use crate::wire::*;
+use crate::engine::{ Engine, EngineState };
 
 /// Trait implemented on types that represent a simulated "module".
 ///
@@ -23,6 +24,13 @@ use crate::wire::*;
 ///
 ///
 pub trait ModuleLike { 
+    /// Creates an instance this module. 
+    ///
+    /// The implementation of this method *must* allocate all 
+    /// wires/ports/registers used by the module, and *also* must call 
+    /// this method when creating all submodules. 
+    fn new_instance(e: &mut EngineState) -> Self;
+
     /// Describes the simulated behavior for this module.
     /// 
     /// The future returned by this function is scheduled on an [`Engine`]. 

@@ -9,10 +9,10 @@ pub struct ReadPortReq {
     en: WireId<bool>,
 }
 impl ReadPortReq {
-    pub fn new(e: &mut WireMap) -> Self { 
+    pub fn new(e: &mut EngineState) -> Self { 
         Self { 
-            idx: e.alloc(),
-            en: e.alloc(),
+            idx: e.wires.alloc(),
+            en: e.wires.alloc(),
         }
     }
 }
@@ -23,9 +23,9 @@ pub struct ReadPortResp {
     data: WireId<usize>,
 }
 impl ReadPortResp {
-    pub fn new(e: &mut WireMap) -> Self { 
+    pub fn new(e: &mut EngineState) -> Self { 
         Self { 
-            data: e.alloc(),
+            data: e.wires.alloc(),
         }
     }
 }
@@ -38,7 +38,7 @@ pub struct ReadPort {
     resp: ReadPortResp,
 }
 impl ReadPort {
-    pub fn new(e: &mut WireMap) -> Self { 
+    pub fn new(e: &mut EngineState) -> Self { 
         Self { 
             req: ReadPortReq::new(e),
             resp: ReadPortResp::new(e),
@@ -56,6 +56,11 @@ impl <const NUM_RP: usize> ROM<NUM_RP> {
     ];
 }
 impl <const NUM_RP: usize> ModuleLike for ROM<NUM_RP> {
+    fn new_instance(state: &mut EngineState) -> Self { 
+        Self { 
+            rp: std::array::from_fn(|_| ReadPort::new(state))
+        }
+    }
     async fn run(&self) {
         // For each read port...
         for pid in 0..NUM_RP {
@@ -73,33 +78,35 @@ impl <const NUM_RP: usize> ModuleLike for ROM<NUM_RP> {
     }
 }
 
-pub struct ROMTestbench {
-    rom: ROM<2>,
-}
-impl ModuleLike for ROMTestbench {
-    async fn run(&self) { 
-
-        self.rom.rp[0].req.idx.drive(5).await;
-        self.rom.rp[0].req.en.drive(true).await;
-        self.rom.rp[1].req.idx.drive(0).await;
-        self.rom.rp[1].req.en.drive(false).await;
-
-        let data = self.rom.rp[0].resp.data.sample().await;
-        assert!(data == 5);
-
-    }
-}
-
 #[test]
 fn test_rom() {
+
+    pub struct ROMTestbench {
+        rom: ROM<2>,
+    }
+    impl ModuleLike for ROMTestbench {
+        fn new_instance(state: &mut EngineState) -> Self { 
+            Self { 
+                rom: ROM::new_instance(state),
+            }
+        }
+        async fn run(&self) { 
+
+            self.rom.rp[0].req.idx.drive(5).await;
+            self.rom.rp[0].req.en.drive(true).await;
+            self.rom.rp[1].req.idx.drive(0).await;
+            self.rom.rp[1].req.en.drive(false).await;
+
+            let data = self.rom.rp[0].resp.data.sample().await;
+            assert!(data == 5);
+
+        }
+    }
+
+
     let mut state = EngineState::new_shareable();
     let mut e = Engine::new(state.clone());
-    let rp = std::array::from_fn(|f| { 
-        ReadPort::new(&mut state.lock().unwrap().wires)
-    });
-    let rom = ROMTestbench { 
-        rom: ROM { rp },
-    };
+    let rom = ROMTestbench::new_instance(&mut state.lock().unwrap());
 
     e.schedule_module(&rom);
     e.schedule_module(&rom.rom);

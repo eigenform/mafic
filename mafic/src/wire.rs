@@ -16,6 +16,12 @@ use crate::engine::EngineState;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction { Input, Output, None }
 
+//pub struct Port<T: Copy + std::fmt::Debug + 'static> {
+//    _t: PhantomData<T>,
+//}
+//impl <T: Copy + std::fmt::Debug + 'static> Port<T> {
+//}
+
 /// A token for a simulated wire whose state is tracked by [`EngineState`]. 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WireId<T> { 
@@ -42,16 +48,23 @@ impl <T: std::fmt::Debug + 'static> WireId<T> {
 }
 
 impl <T: Copy + std::fmt::Debug + 'static> WireId<T> {
-    /// Sample this wire
+    /// Sample the value on this wire
     pub async fn sample<'a>(&self) -> T 
     {
         CombFuture::from_wire(self.clone()).await
     }
-    /// Drive this wire
+    /// Drive this wire with the given value
     pub async fn drive<'a>(&self, data: T)
     {
         CombDriveFuture::for_wire(self.clone(), data).await
     }
+
+    /// Drive this wire with the value on another wire
+    pub async fn assign<'a>(&self, other: Self)
+    {
+        AssignFuture::for_wires(other, self.clone()).await
+    }
+
 }
 
 
@@ -76,22 +89,12 @@ where T: Copy + std::fmt::Debug + 'static
             ctx.ext().downcast_mut().unwrap()
         };
 
-        // Use the wire ID to get a reference to the wire's state
-        let s: Rc<RefCell<Box<dyn WireLike>>> = {
-            state.lock().unwrap().wires.data.get(&self.wire.id)
-                .unwrap().clone()
-        };
-
-        // Take ownership over the state
-        let mut s = s.borrow_mut();
-
-        // Downcast the wire's state into the concrete type
-        let s = s.as_any_mut().downcast_mut::<WireState<T>>().unwrap();
+        let wire_data = state.lock().unwrap().read_wire(self.wire);
 
         // Read the wire state.
         // When the wire contains 'None', we must be waiting for the value 
         // to be driven by some other simulated process. 
-        if let Some(result) = s.data {
+        if let Some(result) = wire_data {
             Poll::Ready(result)
         } else { 
             Poll::Pending
@@ -103,7 +106,6 @@ pub struct CombDriveFuture<T> {
     wire: WireId<T>,
     data: T,
 }
-
 impl <T> CombDriveFuture<T> {
     pub fn for_wire(wire: WireId<T>, data: T) -> Self { 
         Self { wire, data }
@@ -113,32 +115,50 @@ impl <T> Future for CombDriveFuture<T>
 where T: Copy + std::fmt::Debug + 'static
 {
     type Output = ();
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>)
+        -> Poll<Self::Output> 
+    {
         let state: &mut Arc<Mutex<EngineState>> = ctx.ext().downcast_mut().unwrap();
-
-        // Use the ID to get a reference to the wire's state
-        let s: Rc<RefCell<Box<dyn WireLike>>> = {
-            state.lock().unwrap().wires.data.get(&self.wire.id).unwrap().clone()
-        };
-
-        // Take ownership over the state
-        //let mut s = s.lock().unwrap();
-        let mut s = s.borrow_mut();
-
-        // Downcast the wire's state into the concrete type
-        let s = s.as_any_mut().downcast_mut::<WireState<T>>().unwrap();
-
-        // If this wire has already been driven, just panic.
-        if let Some(data) = s.data.replace(self.data) {
-            panic!("driver-to-driver error {:?}, {:x?}", self.wire, *s);
-        } 
-        else { 
-            //println!("wrote wire {:?}, {:x?}", self.wire, *s);
-            Poll::Ready(())
-        }
+        state.lock().unwrap().write_wire(self.wire, self.data);
+        Poll::Ready(())
     }
 }
+
+pub struct AssignFuture<T> {
+    src: WireId<T>,
+    tgt: WireId<T>,
+}
+impl <T> AssignFuture<T> {
+    pub fn for_wires(src: WireId<T>, tgt: WireId<T>) -> Self { 
+        Self { src, tgt }
+    }
+}
+impl <T> Future for AssignFuture<T> 
+where T: Copy + std::fmt::Debug + 'static
+{
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) 
+        -> Poll<Self::Output> 
+    {
+        let state: &mut Arc<Mutex<EngineState>> = 
+            ctx.ext().downcast_mut().unwrap();
+
+        // Read the source wire. 
+        // If the state of the source wire is undefined, we need to defer this
+        // task until the source wire actually obtains a value ...
+        let src_value = state.lock().unwrap().read_wire(self.src);
+        if src_value.is_none() {
+            return Poll::Pending;
+        }
+
+        // Write to the target wire
+        let src_data = src_value.unwrap();
+        state.lock().unwrap().write_wire(self.tgt, src_data);
+
+        Poll::Ready(())
+    }
+}
+
 
 /// The simulated state of a wire tracked by [`Engine`](crate::engine::Engine).
 #[derive(Debug)]
@@ -184,12 +204,15 @@ pub struct WireMap {
     /// Type-erased container for [WireState] 
     pub data: BTreeMap<usize, Rc<RefCell<Box<dyn WireLike>>>>,
 
+    pub connections: BTreeMap<usize, BTreeSet<usize>>,
+
     pub next_sid: usize,
 }
 impl WireMap {
     pub fn new() -> Self { 
         Self { 
             data: BTreeMap::new(),
+            connections: BTreeMap::new(),
             next_sid: 1,
         }
     }
@@ -220,7 +243,6 @@ impl WireMap {
         };
 
         // Take ownership over the state
-        //let mut s = s.lock().unwrap();
         let mut s = s.borrow_mut();
 
         // Downcast the wire's state into the concrete type

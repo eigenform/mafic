@@ -36,9 +36,25 @@ impl <T: Copy + std::fmt::Debug + 'static, const SZ: usize> RAM<T, SZ>
         }
     }
 }
-impl <T: Copy + std::fmt::Debug + 'static, const SZ: usize> 
+impl <T: Copy + Default + std::fmt::Debug + 'static, const SZ: usize> 
 ModuleLike for RAM<T, SZ> 
 {
+    fn new_instance(state: &mut EngineState) -> Self { 
+        Self { 
+            rp: ReadPort { 
+                idx: state.wires.alloc(),
+                en: state.wires.alloc(),
+                data: state.wires.alloc(),
+            },
+            wp: WritePort { 
+                idx: state.wires.alloc(),
+                en: state.wires.alloc(),
+                data: state.wires.alloc(),
+            },
+            data: [state.registers.alloc(T::default()); SZ],
+        }
+    }
+
     async fn run(&self) {
         self.do_readport().await;
         self.do_writeport().await;
@@ -66,6 +82,8 @@ fn simple_ram() {
 
     let mut e = Mafic::init_engine();
 
+    // ----------------------------
+    // Cycle 1 - read from idx 0, write to idx 0
     e.schedule("poke", async {
         ram.rp.en.drive(true).await;
         ram.rp.idx.drive(0).await;
@@ -76,10 +94,12 @@ fn simple_ram() {
     e.schedule_module(&ram);
     e.run();
 
+    // ----------------------------
+    // Cycle 2 - read from idx 0
+
     let x = Mafic::peek(ram.rp.data).unwrap();
     assert!(x == 0x00000000);
-    e.update_registers();
-    e.reset_wires();
+    e.step();
 
     e.schedule("poke", async {
         ram.rp.en.drive(true).await;

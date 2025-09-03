@@ -5,6 +5,12 @@ pub struct ModuleA {
     reg: RegisterId<usize>,
 }
 impl ModuleLike for ModuleA {
+    fn new_instance(state: &mut EngineState) -> Self { 
+        Self { 
+            out: state.wires.alloc(),
+            reg: state.registers.alloc(0),
+        }
+    }
     async fn run(&self) {
         let value = self.reg.sample().await;
         println!("reg = {:?}", value);
